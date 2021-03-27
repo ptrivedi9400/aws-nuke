@@ -1,23 +1,33 @@
 package resources
 
-import "github.com/aws/aws-sdk-go/service/ec2"
+import (
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/rebuy-de/aws-nuke/pkg/types"
+)
 
 type EC2InternetGateway struct {
 	svc *ec2.EC2
-	id  *string
+	igw *ec2.InternetGateway
 }
 
-func (n *EC2Nuke) ListInternetGateways() ([]Resource, error) {
-	resp, err := n.Service.DescribeInternetGateways(nil)
+func init() {
+	register("EC2InternetGateway", ListEC2InternetGateways)
+}
+
+func ListEC2InternetGateways(sess *session.Session) ([]Resource, error) {
+	svc := ec2.New(sess)
+
+	resp, err := svc.DescribeInternetGateways(nil)
 	if err != nil {
 		return nil, err
 	}
 
 	resources := make([]Resource, 0)
-	for _, out := range resp.InternetGateways {
+	for _, igw := range resp.InternetGateways {
 		resources = append(resources, &EC2InternetGateway{
-			svc: n.Service,
-			id:  out.InternetGatewayId,
+			svc: svc,
+			igw: igw,
 		})
 	}
 
@@ -26,7 +36,7 @@ func (n *EC2Nuke) ListInternetGateways() ([]Resource, error) {
 
 func (e *EC2InternetGateway) Remove() error {
 	params := &ec2.DeleteInternetGatewayInput{
-		InternetGatewayId: e.id,
+		InternetGatewayId: e.igw.InternetGatewayId,
 	}
 
 	_, err := e.svc.DeleteInternetGateway(params)
@@ -37,6 +47,14 @@ func (e *EC2InternetGateway) Remove() error {
 	return nil
 }
 
+func (e *EC2InternetGateway) Properties() types.Properties {
+	properties := types.NewProperties()
+	for _, tagValue := range e.igw.Tags {
+		properties.SetTag(tagValue.Key, tagValue.Value)
+	}
+	return properties
+}
+
 func (e *EC2InternetGateway) String() string {
-	return *e.id
+	return *e.igw.InternetGatewayId
 }

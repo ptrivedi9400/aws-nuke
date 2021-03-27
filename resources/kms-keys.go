@@ -2,52 +2,80 @@ package resources
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/kms"
+	"github.com/rebuy-de/aws-nuke/pkg/types"
 )
 
 type KMSKey struct {
-	svc   *kms.KMS
-	id    string
-	state string
-	alias string
+	svc     *kms.KMS
+	id      string
+	state   string
+	manager *string
+	tags    []*kms.Tag
 }
 
-func (n *KMSNuke) ListKeys() ([]Resource, error) {
-	respAlias, err := n.Service.ListAliases(nil)
-	if err != nil {
-		return nil, err
-	}
+func init() {
+	register("KMSKey", ListKMSKeys)
+}
 
-	aliasMap := map[string]string{}
-	for _, alias := range respAlias.Aliases {
-		if alias.TargetKeyId != nil {
-			aliasMap[*alias.TargetKeyId] = *alias.AliasName
-		}
-	}
-
-	resp, err := n.Service.ListKeys(nil)
-	if err != nil {
-		return nil, err
-	}
-
+func ListKMSKeys(sess *session.Session) ([]Resource, error) {
+	svc := kms.New(sess)
 	resources := make([]Resource, 0)
-	for _, key := range resp.Keys {
-		resp, err := n.Service.DescribeKey(&kms.DescribeKeyInput{
-			KeyId: key.KeyId,
-		})
-		if err != nil {
-			return nil, err
+
+	var innerErr error
+	err := svc.ListKeysPages(nil, func(resp *kms.ListKeysOutput, lastPage bool) bool {
+		for _, key := range resp.Keys {
+			resp, err := svc.DescribeKey(&kms.DescribeKeyInput{
+				KeyId: key.KeyId,
+			})
+			if err != nil {
+				innerErr = err
+				return false
+			}
+
+			if *resp.KeyMetadata.KeyManager == kms.KeyManagerTypeAws {
+				continue
+			}
+
+			if *resp.KeyMetadata.KeyState == kms.KeyStatePendingDeletion {
+				continue
+			}
+
+			kmsKey := &KMSKey{
+				svc:     svc,
+				id:      *resp.KeyMetadata.KeyId,
+				state:   *resp.KeyMetadata.KeyState,
+				manager: resp.KeyMetadata.KeyManager,
+			}
+
+			tags, err := svc.ListResourceTags(&kms.ListResourceTagsInput{
+				KeyId: key.KeyId,
+			})
+			if err != nil {
+				innerErr = err
+				return false
+			}
+
+			kmsKey.tags = tags.Tags
+			resources = append(resources, kmsKey)
 		}
 
-		resources = append(resources, &KMSKey{
-			svc:   n.Service,
-			id:    *resp.KeyMetadata.KeyId,
-			state: *resp.KeyMetadata.KeyState,
-			alias: aliasMap[*resp.KeyMetadata.KeyId],
-		})
+		if lastPage {
+			return false
+		}
+
+		return true
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if innerErr != nil {
+		return nil, err
 	}
 
 	return resources, nil
@@ -58,7 +86,7 @@ func (e *KMSKey) Filter() error {
 		return fmt.Errorf("is already in PendingDeletion state")
 	}
 
-	if strings.HasPrefix(e.alias, "alias/aws/") {
+	if e.manager != nil && *e.manager == kms.KeyManagerTypeAws {
 		return fmt.Errorf("cannot delete AWS managed key")
 	}
 
@@ -75,4 +103,16 @@ func (e *KMSKey) Remove() error {
 
 func (e *KMSKey) String() string {
 	return e.id
+}
+
+func (i *KMSKey) Properties() types.Properties {
+	properties := types.NewProperties()
+	properties.
+		Set("ID", i.id)
+
+	for _, tag := range i.tags {
+		properties.SetTag(tag.TagKey, tag.TagValue)
+	}
+
+	return properties
 }

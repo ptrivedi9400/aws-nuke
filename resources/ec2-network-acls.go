@@ -3,17 +3,26 @@ package resources
 import (
 	"fmt"
 
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/rebuy-de/aws-nuke/pkg/types"
 )
 
 type EC2NetworkACL struct {
 	svc       *ec2.EC2
 	id        *string
 	isDefault *bool
+	tags      []*ec2.Tag
 }
 
-func (n *EC2Nuke) ListNetworkACLs() ([]Resource, error) {
-	resp, err := n.Service.DescribeNetworkAcls(nil)
+func init() {
+	register("EC2NetworkACL", ListEC2NetworkACLs)
+}
+
+func ListEC2NetworkACLs(sess *session.Session) ([]Resource, error) {
+	svc := ec2.New(sess)
+
+	resp, err := svc.DescribeNetworkAcls(nil)
 	if err != nil {
 		return nil, err
 	}
@@ -22,9 +31,10 @@ func (n *EC2Nuke) ListNetworkACLs() ([]Resource, error) {
 	for _, out := range resp.NetworkAcls {
 
 		resources = append(resources, &EC2NetworkACL{
-			svc:       n.Service,
+			svc:       svc,
 			id:        out.NetworkAclId,
 			isDefault: out.IsDefault,
+			tags:      out.Tags,
 		})
 	}
 
@@ -50,6 +60,15 @@ func (e *EC2NetworkACL) Remove() error {
 	}
 
 	return nil
+}
+
+func (f *EC2NetworkACL) Properties() types.Properties {
+	properties := types.NewProperties()
+	for _, tag := range f.tags {
+		properties.SetTag(tag.Key, tag.Value)
+	}
+	properties.Set("ID", f.id)
+	return properties
 }
 
 func (e *EC2NetworkACL) String() string {

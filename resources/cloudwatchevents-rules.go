@@ -3,18 +3,26 @@ package resources
 import (
 	"fmt"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudwatchevents"
 )
 
-func (n *CloudWatchEventsNuke) ListRules() ([]Resource, error) {
-	resp, err := n.Service.ListRules(nil)
+func init() {
+	register("CloudWatchEventsRule", ListCloudWatchEventsRules)
+}
+
+func ListCloudWatchEventsRules(sess *session.Session) ([]Resource, error) {
+	svc := cloudwatchevents.New(sess)
+
+	resp, err := svc.ListRules(nil)
 	if err != nil {
 		return nil, err
 	}
 	resources := make([]Resource, 0)
 	for _, rule := range resp.Rules {
 		resources = append(resources, &CloudWatchEventsRule{
-			svc:  n.Service,
+			svc:  svc,
 			name: rule.Name,
 		})
 
@@ -30,6 +38,7 @@ type CloudWatchEventsRule struct {
 func (rule *CloudWatchEventsRule) Remove() error {
 	_, err := rule.svc.DeleteRule(&cloudwatchevents.DeleteRuleInput{
 		Name: rule.name,
+		Force: aws.Bool(true),
 	})
 	return err
 }

@@ -3,32 +3,56 @@ package resources
 import (
 	"fmt"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/rebuy-de/aws-nuke/pkg/types"
 )
 
 type EC2VPNGatewayAttachment struct {
-	svc   *ec2.EC2
-	vpcId string
-	vpnId string
-	state string
+	svc     *ec2.EC2
+	vpcId   string
+	vpnId   string
+	state   string
+	vpcTags []*ec2.Tag
+	vgwTags []*ec2.Tag
 }
 
-func (n *EC2Nuke) ListVPNGatewayAttachments() ([]Resource, error) {
+func init() {
+	register("EC2VPNGatewayAttachment", ListEC2VPNGatewayAttachments)
+}
 
-	resp, err := n.Service.DescribeVpnGateways(nil)
+func ListEC2VPNGatewayAttachments(sess *session.Session) ([]Resource, error) {
+	svc := ec2.New(sess)
+
+	resp, err := svc.DescribeVpcs(nil)
 	if err != nil {
 		return nil, err
 	}
 
 	resources := make([]Resource, 0)
+	for _, vpc := range resp.Vpcs {
+		params := &ec2.DescribeVpnGatewaysInput{
+			Filters: []*ec2.Filter{
+				{
+					Name:   aws.String("attachment.vpc-id"),
+					Values: []*string{vpc.VpcId},
+				},
+			},
+		}
 
-	for _, vgw := range resp.VpnGateways {
-		for _, att := range vgw.VpcAttachments {
+		resp, err := svc.DescribeVpnGateways(params)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, vgw := range resp.VpnGateways {
 			resources = append(resources, &EC2VPNGatewayAttachment{
-				svc:   n.Service,
-				vpcId: *att.VpcId,
-				vpnId: *vgw.VpnGatewayId,
-				state: *att.State,
+				svc:     svc,
+				vpcId:   *vpc.VpcId,
+				vpnId:   *vgw.VpnGatewayId,
+				vpcTags: vpc.Tags,
+				vgwTags: vgw.Tags,
 			})
 		}
 	}
@@ -55,6 +79,17 @@ func (v *EC2VPNGatewayAttachment) Remove() error {
 	}
 
 	return nil
+}
+
+func (v *EC2VPNGatewayAttachment) Properties() types.Properties {
+	properties := types.NewProperties()
+	for _, tagValue := range v.vgwTags {
+		properties.SetTagWithPrefix("vgw", tagValue.Key, tagValue.Value)
+	}
+	for _, tagValue := range v.vpcTags {
+		properties.SetTagWithPrefix("vpc", tagValue.Key, tagValue.Value)
+	}
+	return properties
 }
 
 func (v *EC2VPNGatewayAttachment) String() string {

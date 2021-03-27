@@ -1,4 +1,6 @@
 /vendor
 /aws-nuke
 /aws-nuke-*
-.glide
+/dist
+/releases
+/mocks

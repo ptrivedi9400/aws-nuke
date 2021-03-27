@@ -4,17 +4,27 @@ import (
 	"fmt"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/rebuy-de/aws-nuke/pkg/types"
 )
 
 type EC2InternetGatewayAttachment struct {
-	svc   *ec2.EC2
-	vpcId *string
-	igwId *string
+	svc     *ec2.EC2
+	vpcId   *string
+	vpcTags []*ec2.Tag
+	igwId   *string
+	igwTags []*ec2.Tag
 }
 
-func (n *EC2Nuke) ListInternetGatewayAttachments() ([]Resource, error) {
-	resp, err := n.Service.DescribeVpcs(nil)
+func init() {
+	register("EC2InternetGatewayAttachment", ListEC2InternetGatewayAttachments)
+}
+
+func ListEC2InternetGatewayAttachments(sess *session.Session) ([]Resource, error) {
+	svc := ec2.New(sess)
+
+	resp, err := svc.DescribeVpcs(nil)
 	if err != nil {
 		return nil, err
 	}
@@ -23,23 +33,25 @@ func (n *EC2Nuke) ListInternetGatewayAttachments() ([]Resource, error) {
 	for _, vpc := range resp.Vpcs {
 		params := &ec2.DescribeInternetGatewaysInput{
 			Filters: []*ec2.Filter{
-				&ec2.Filter{
+				{
 					Name:   aws.String("attachment.vpc-id"),
 					Values: []*string{vpc.VpcId},
 				},
 			},
 		}
 
-		resp, err := n.Service.DescribeInternetGateways(params)
+		resp, err := svc.DescribeInternetGateways(params)
 		if err != nil {
 			return nil, err
 		}
 
-		for _, out := range resp.InternetGateways {
+		for _, igw := range resp.InternetGateways {
 			resources = append(resources, &EC2InternetGatewayAttachment{
-				svc:   n.Service,
-				vpcId: vpc.VpcId,
-				igwId: out.InternetGatewayId,
+				svc:     svc,
+				vpcId:   vpc.VpcId,
+				vpcTags: vpc.Tags,
+				igwId:   igw.InternetGatewayId,
+				igwTags: igw.Tags,
 			})
 		}
 	}
@@ -59,6 +71,17 @@ func (e *EC2InternetGatewayAttachment) Remove() error {
 	}
 
 	return nil
+}
+
+func (e *EC2InternetGatewayAttachment) Properties() types.Properties {
+	properties := types.NewProperties()
+	for _, tagValue := range e.igwTags {
+		properties.SetTagWithPrefix("igw", tagValue.Key, tagValue.Value)
+	}
+	for _, tagValue := range e.vpcTags {
+		properties.SetTagWithPrefix("vpc", tagValue.Key, tagValue.Value)
+	}
+	return properties
 }
 
 func (e *EC2InternetGatewayAttachment) String() string {

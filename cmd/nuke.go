@@ -2,100 +2,57 @@ package cmd
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/rebuy-de/aws-nuke/pkg/awsutil"
+	"github.com/rebuy-de/aws-nuke/pkg/config"
+	"github.com/rebuy-de/aws-nuke/pkg/types"
 	"github.com/rebuy-de/aws-nuke/resources"
+	"github.com/sirupsen/logrus"
 )
 
 type Nuke struct {
 	Parameters NukeParameters
-	Config     *NukeConfig
+	Account    awsutil.Account
+	Config     *config.Nuke
 
-	accountConfig NukeConfigAccount
-	accountID     string
-	accountAlias  string
-	sessions      map[string]*session.Session
-
-	ForceSleep time.Duration
+	ResourceTypes types.Collection
 
 	items Queue
 }
 
-func NewNuke(params NukeParameters) *Nuke {
+func NewNuke(params NukeParameters, account awsutil.Account) *Nuke {
 	n := Nuke{
 		Parameters: params,
-		ForceSleep: 15 * time.Second,
+		Account:    account,
 	}
 
 	return &n
 }
 
-func (n *Nuke) StartSession() error {
-	n.sessions = make(map[string]*session.Session)
-	for _, region := range n.Config.Regions {
-		if n.Parameters.hasProfile() {
-			var err error
-			n.sessions[region], err = session.NewSessionWithOptions(session.Options{
-				Config: aws.Config{
-					Region: aws.String(region),
-				},
-				SharedConfigState: session.SharedConfigEnable,
-				Profile:           n.Parameters.Profile,
-			})
-
-			if err != nil {
-				return err
-			}
-		}
-
-		if n.Parameters.hasKeys() {
-			n.sessions[region] = session.Must(session.NewSessionWithOptions(session.Options{
-				Config: aws.Config{
-					Region: aws.String(region),
-					Credentials: credentials.NewStaticCredentials(
-						n.Parameters.AccessKeyID,
-						n.Parameters.SecretAccessKey,
-						"",
-					)}}))
-
-			if n.sessions[region] == nil {
-				return fmt.Errorf("Unable to create session with key ID '%s'.", n.Parameters.AccessKeyID)
-			}
-
-		}
-
-	}
-
-	if len(n.sessions) < 1 {
-		return fmt.Errorf("You have to specify a profile or credentials for at least one region.")
-	}
-	return nil
-}
-
 func (n *Nuke) Run() error {
 	var err error
 
+	if n.Parameters.ForceSleep < 3 {
+		return fmt.Errorf("Value for --force-sleep cannot be less than 3 seconds. This is for your own protection.")
+	}
+	forceSleep := time.Duration(n.Parameters.ForceSleep) * time.Second
+
 	fmt.Printf("aws-nuke version %s - %s - %s\n\n", BuildVersion, BuildDate, BuildHash)
 
-	err = n.ValidateAccount()
+	err = n.Config.ValidateAccount(n.Account.ID(), n.Account.Aliases())
 	if err != nil {
 		return err
 	}
 
 	fmt.Printf("Do you really want to nuke the account with "+
-		"the ID %s and the alias '%s'?\n", n.accountID, n.accountAlias)
+		"the ID %s and the alias '%s'?\n", n.Account.ID(), n.Account.Alias())
 	if n.Parameters.Force {
-		fmt.Printf("Waiting %v before continuing.\n", n.ForceSleep)
-		time.Sleep(n.ForceSleep)
+		fmt.Printf("Waiting %v before continuing.\n", forceSleep)
+		time.Sleep(forceSleep)
 	} else {
 		fmt.Printf("Do you want to continue? Enter account alias to continue.\n")
-		err = Prompt(n.accountAlias)
+		err = Prompt(n.Account.Alias())
 		if err != nil {
 			return err
 		}
@@ -112,35 +69,57 @@ func (n *Nuke) Run() error {
 	}
 
 	if !n.Parameters.NoDryRun {
-		fmt.Println("Would delete these resources. Provide --no-dry-run to actually destroy resources.")
+		fmt.Println("The above resources would be deleted with the supplied configuration. Provide --no-dry-run to actually destroy resources.")
 		return nil
 	}
 
 	fmt.Printf("Do you really want to nuke these resources on the account with "+
-		"the ID %s and the alias '%s'?\n", n.accountID, n.accountAlias)
+		"the ID %s and the alias '%s'?\n", n.Account.ID(), n.Account.Alias())
 	if n.Parameters.Force {
-		fmt.Printf("Waiting %v before continuing.\n", n.ForceSleep)
-		time.Sleep(n.ForceSleep)
+		fmt.Printf("Waiting %v before continuing.\n", forceSleep)
+		time.Sleep(forceSleep)
 	} else {
 		fmt.Printf("Do you want to continue? Enter account alias to continue.\n")
-		err = Prompt(n.accountAlias)
+		err = Prompt(n.Account.Alias())
 		if err != nil {
 			return err
 		}
 	}
 
 	failCount := 0
+	waitingCount := 0
 
 	for {
 		n.HandleQueue()
 
 		if n.items.Count(ItemStatePending, ItemStateWaiting, ItemStateNew) == 0 && n.items.Count(ItemStateFailed) > 0 {
 			if failCount >= 2 {
-				return fmt.Errorf("There are resources in failed state, but none are ready for deletion, anymore.")
+				logrus.Errorf("There are resources in failed state, but none are ready for deletion, anymore.")
+				fmt.Println()
+
+				for _, item := range n.items {
+					if item.State != ItemStateFailed {
+						continue
+					}
+
+					item.Print()
+					logrus.Error(item.Reason)
+				}
+
+				return fmt.Errorf("failed")
 			}
+
 			failCount = failCount + 1
 		} else {
 			failCount = 0
+		}
+		if n.Parameters.MaxWaitRetries != 0 && n.items.Count(ItemStateWaiting, ItemStatePending) > 0 && n.items.Count(ItemStateNew) == 0 {
+			if waitingCount >= n.Parameters.MaxWaitRetries {
+				return fmt.Errorf("Max wait retries of %d exceeded.\n\n", n.Parameters.MaxWaitRetries)
+			}
+			waitingCount = waitingCount + 1
+		} else {
+			waitingCount = 0
 		}
 		if n.items.Count(ItemStateNew, ItemStatePending, ItemStateFailed, ItemStateWaiting) == 0 {
 			break
@@ -155,71 +134,44 @@ func (n *Nuke) Run() error {
 	return nil
 }
 
-func (n *Nuke) ValidateAccount() error {
-	sess := n.sessions[n.Config.Regions[0]]
-	identOutput, err := sts.New(sess).GetCallerIdentity(nil)
-	if err != nil {
-		return err
-	}
-
-	aliasesOutput, err := iam.New(sess).ListAccountAliases(nil)
-	if err != nil {
-		return err
-	}
-
-	accountID := *identOutput.Account
-	aliases := aliasesOutput.AccountAliases
-
-	if !n.Config.HasBlacklist() {
-		return fmt.Errorf("The config file contains an empty blacklist. " +
-			"For safety reasons you need to specify at least one account ID. " +
-			"This should be your production account.")
-	}
-
-	if n.Config.InBlacklist(accountID) {
-		return fmt.Errorf("You are trying to nuke the account with the ID %s, "+
-			"but it is blacklisted. Aborting.", accountID)
-	}
-
-	if len(aliases) == 0 {
-		return fmt.Errorf("The specified account doesn't have an alias. " +
-			"For safety reasons you need to specify an account alias. " +
-			"Your production account should contain the term 'prod'.")
-	}
-
-	for _, alias := range aliases {
-		if strings.Contains(strings.ToLower(*alias), "prod") {
-			return fmt.Errorf("You are trying to nuke an account with the alias '%s', "+
-				"but it has the substring 'prod' in it. Aborting.", *aliases[0])
-		}
-	}
-
-	if _, ok := n.Config.Accounts[accountID]; !ok {
-		return fmt.Errorf("Your account ID '%s' isn't listed in the config. "+
-			"Aborting.", accountID)
-	}
-
-	n.accountConfig = n.Config.Accounts[accountID]
-	n.accountID = accountID
-	n.accountAlias = *aliases[0]
-
-	return nil
-}
-
 func (n *Nuke) Scan() error {
+	accountConfig := n.Config.Accounts[n.Account.ID()]
+
+	resourceTypes := ResolveResourceTypes(
+		resources.GetListerNames(),
+		[]types.Collection{
+			n.Parameters.Targets,
+			n.Config.ResourceTypes.Targets,
+			accountConfig.ResourceTypes.Targets,
+		},
+		[]types.Collection{
+			n.Parameters.Excludes,
+			n.Config.ResourceTypes.Excludes,
+			accountConfig.ResourceTypes.Excludes,
+		},
+	)
+
 	queue := make(Queue, 0)
 
-	for _, region := range n.Config.Regions {
-		sess := n.sessions[region]
-		items := Scan(sess)
+	for _, regionName := range n.Config.Regions {
+		region := NewRegion(regionName, n.Account.ResourceTypeToServiceType, n.Account.NewSession)
+
+		items := Scan(region, resourceTypes)
 		for item := range items {
-			if !n.Parameters.WantsTarget(item.Service) {
-				continue
+			ffGetter, ok := item.Resource.(resources.FeatureFlagGetter)
+			if ok {
+				ffGetter.FeatureFlags(n.Config.FeatureFlags)
 			}
 
 			queue = append(queue, item)
-			n.Filter(item)
-			item.Print()
+			err := n.Filter(item)
+			if err != nil {
+				return err
+			}
+
+			if item.State != ItemStateFiltered || !n.Parameters.Quiet {
+				item.Print()
+			}
 		}
 	}
 
@@ -231,35 +183,56 @@ func (n *Nuke) Scan() error {
 	return nil
 }
 
-func (n *Nuke) Filter(item *Item) {
+func (n *Nuke) Filter(item *Item) error {
+
 	checker, ok := item.Resource.(resources.Filter)
 	if ok {
 		err := checker.Filter()
 		if err != nil {
 			item.State = ItemStateFiltered
 			item.Reason = err.Error()
-			return
+
+			// Not returning the error, since it could be because of a failed
+			// request to the API. We do not want to block the whole nuking,
+			// because of an issue on AWS side.
+			return nil
 		}
 	}
 
-	filters, ok := n.accountConfig.Filters[item.Service]
-	if !ok {
-		return
+	accountFilters, err := n.Config.Filters(n.Account.ID())
+	if err != nil {
+		return err
 	}
 
-	for _, filter := range filters {
-		if filter == item.Resource.String() {
+	itemFilters, ok := accountFilters[item.Type]
+	if !ok {
+		return nil
+	}
+
+	for _, filter := range itemFilters {
+		prop, err := item.GetProperty(filter.Property)
+
+		match, err := filter.Match(prop)
+		if err != nil {
+			return err
+		}
+
+		if IsTrue(filter.Invert) {
+			match = !match
+		}
+
+		if match {
 			item.State = ItemStateFiltered
 			item.Reason = "filtered by config"
-			return
+			return nil
 		}
 	}
 
-	return
+	return nil
 }
 
 func (n *Nuke) HandleQueue() {
-	listCache := make(map[string][]resources.Resource)
+	listCache := make(map[string]map[string][]resources.Resource)
 
 	for _, item := range n.items {
 		switch item.State {
@@ -299,22 +272,26 @@ func (n *Nuke) HandleRemove(item *Item) {
 	item.Reason = ""
 }
 
-func (n *Nuke) HandleWait(item *Item, cache map[string][]resources.Resource) {
+func (n *Nuke) HandleWait(item *Item, cache map[string]map[string][]resources.Resource) {
 	var err error
-
-	left, ok := cache[item.Service]
+	region := item.Region.Name
+	_, ok := cache[region]
 	if !ok {
-		left, err = item.Lister()
+		cache[region] = map[string][]resources.Resource{}
+	}
+	left, ok := cache[region][item.Type]
+	if !ok {
+		left, err = item.List()
 		if err != nil {
 			item.State = ItemStateFailed
 			item.Reason = err.Error()
 			return
 		}
-		cache[item.Service] = left
+		cache[region][item.Type] = left
 	}
 
 	for _, r := range left {
-		if r.String() == item.Resource.String() {
+		if item.Equals(r) {
 			checker, ok := r.(resources.Filter)
 			if ok {
 				err := checker.Filter()

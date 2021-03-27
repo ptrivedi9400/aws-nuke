@@ -1,12 +1,19 @@
 package resources
 
-import (
-	"fmt"
-	"strings"
-)
+import "github.com/aws/aws-sdk-go/aws/awserr"
 
-func GetCategory(r Resource) string {
-	return strings.Split(fmt.Sprintf("%T", r), ".")[1] // hackey
+func UnPtrBool(ptr *bool, def bool) bool {
+	if ptr == nil {
+		return def
+	}
+	return *ptr
+}
+
+func UnPtrString(ptr *string, def string) string {
+	if ptr == nil {
+		return def
+	}
+	return *ptr
 }
 
 func EqualStringPtr(v1, v2 *string) bool {
@@ -19,4 +26,13 @@ func EqualStringPtr(v1, v2 *string) bool {
 	}
 
 	return *v1 == *v2
+}
+
+func IsAWSError(err error, code string) bool {
+	aerr, ok := err.(awserr.Error)
+	if !ok {
+		return false
+	}
+
+	return aerr.Code() == code
 }

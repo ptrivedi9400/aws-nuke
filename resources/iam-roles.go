@@ -4,28 +4,60 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/rebuy-de/aws-nuke/pkg/types"
+	"github.com/sirupsen/logrus"
 )
 
 type IAMRole struct {
 	svc  *iam.IAM
+	role *iam.Role
 	name string
 	path string
 }
 
-func (n *IAMNuke) ListRoles() ([]Resource, error) {
-	resp, err := n.Service.ListRoles(nil)
-	if err != nil {
-		return nil, err
-	}
+func init() {
+	register("IAMRole", ListIAMRoles)
+}
 
+func ListIAMRoles(sess *session.Session) ([]Resource, error) {
+	svc := iam.New(sess)
+	params := &iam.ListRolesInput{}
 	resources := make([]Resource, 0)
-	for _, out := range resp.Roles {
-		resources = append(resources, &IAMRole{
-			svc:  n.Service,
-			name: *out.RoleName,
-			path: *out.Path,
-		})
+
+	for {
+		resp, err := svc.ListRoles(params)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, out := range resp.Roles {
+			getroleParams := &iam.GetRoleInput{
+				RoleName: out.RoleName,
+			}
+			getroleOutput, err := svc.GetRole(getroleParams)
+			if err != nil {
+				logrus.
+					WithError(err).
+					WithField("roleName", *out.RoleName).
+					Error("Failed to get listed role")
+				continue
+			}
+
+			resources = append(resources, &IAMRole{
+				svc:  svc,
+				role: getroleOutput.Role,
+				name: *getroleOutput.Role.RoleName,
+				path: *getroleOutput.Role.Path,
+			})
+		}
+
+		if *resp.IsTruncated == false {
+			break
+		}
+
+		params.Marker = resp.Marker
 	}
 
 	return resources, nil
@@ -47,6 +79,17 @@ func (e *IAMRole) Remove() error {
 	}
 
 	return nil
+}
+
+func (role *IAMRole) Properties() types.Properties {
+	properties := types.NewProperties()
+	for _, tagValue := range role.role.Tags {
+		properties.SetTag(tagValue.Key, tagValue.Value)
+	}
+	properties.
+		Set("Name", role.name).
+		Set("Path", role.path)
+	return properties
 }
 
 func (e *IAMRole) String() string {

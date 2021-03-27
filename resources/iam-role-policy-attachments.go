@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/rebuy-de/aws-nuke/pkg/types"
+	"github.com/sirupsen/logrus"
 )
 
 type IAMRolePolicyAttachment struct {
@@ -14,30 +17,55 @@ type IAMRolePolicyAttachment struct {
 	roleName   string
 }
 
-func (n *IAMNuke) ListRolePolicyAttachments() ([]Resource, error) {
-	resp, err := n.Service.ListRoles(nil)
-	if err != nil {
-		return nil, err
-	}
+func init() {
+	register("IAMRolePolicyAttachment", ListIAMRolePolicyAttachments)
+}
 
+func ListIAMRolePolicyAttachments(sess *session.Session) ([]Resource, error) {
+	svc := iam.New(sess)
+	roleParams := &iam.ListRolesInput{}
 	resources := make([]Resource, 0)
-	for _, role := range resp.Roles {
-		resp, err := n.Service.ListAttachedRolePolicies(
-			&iam.ListAttachedRolePoliciesInput{
-				RoleName: role.RoleName,
-			})
+
+	for {
+		roleResp, err := svc.ListRoles(roleParams)
 		if err != nil {
 			return nil, err
 		}
 
-		for _, pol := range resp.AttachedPolicies {
-			resources = append(resources, &IAMRolePolicyAttachment{
-				svc:        n.Service,
-				policyArn:  *pol.PolicyArn,
-				policyName: *pol.PolicyName,
-				roleName:   *role.RoleName,
-			})
+		for _, role := range roleResp.Roles {
+			polParams := &iam.ListAttachedRolePoliciesInput{
+				RoleName: role.RoleName,
+			}
+
+			for {
+				polResp, err := svc.ListAttachedRolePolicies(polParams)
+				if err != nil {
+					logrus.Errorf("failed to list attached policies for role %s: %v",
+						*role.RoleName, err)
+					break
+				}
+				for _, pol := range polResp.AttachedPolicies {
+					resources = append(resources, &IAMRolePolicyAttachment{
+						svc:        svc,
+						policyArn:  *pol.PolicyArn,
+						policyName: *pol.PolicyName,
+						roleName:   *role.RoleName,
+					})
+				}
+
+				if *polResp.IsTruncated == false {
+					break
+				}
+
+				polParams.Marker = polResp.Marker
+			}
 		}
+
+		if *roleResp.IsTruncated == false {
+			break
+		}
+
+		roleParams.Marker = roleResp.Marker
 	}
 
 	return resources, nil
@@ -61,6 +89,13 @@ func (e *IAMRolePolicyAttachment) Remove() error {
 	}
 
 	return nil
+}
+
+func (e *IAMRolePolicyAttachment) Properties() types.Properties {
+	return types.NewProperties().
+		Set("RoleName", e.roleName).
+		Set("PolicyName", e.policyName).
+		Set("PolicyArn", e.policyArn)
 }
 
 func (e *IAMRolePolicyAttachment) String() string {

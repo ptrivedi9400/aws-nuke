@@ -1,24 +1,42 @@
 package resources
 
-import "github.com/aws/aws-sdk-go/service/iam"
+import (
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/iam"
+)
 
 type IAMInstanceProfile struct {
 	svc  *iam.IAM
 	name string
 }
 
-func (n *IAMNuke) ListInstanceProfiles() ([]Resource, error) {
-	resp, err := n.Service.ListInstanceProfiles(nil)
-	if err != nil {
-		return nil, err
-	}
+func init() {
+	register("IAMInstanceProfile", ListIAMInstanceProfiles)
+}
 
+func ListIAMInstanceProfiles(sess *session.Session) ([]Resource, error) {
+	svc := iam.New(sess)
+	params := &iam.ListInstanceProfilesInput{}
 	resources := make([]Resource, 0)
-	for _, out := range resp.InstanceProfiles {
-		resources = append(resources, &IAMInstanceProfile{
-			svc:  n.Service,
-			name: *out.InstanceProfileName,
-		})
+
+	for {
+		resp, err := svc.ListInstanceProfiles(params)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, out := range resp.InstanceProfiles {
+			resources = append(resources, &IAMInstanceProfile{
+				svc:  svc,
+				name: *out.InstanceProfileName,
+			})
+		}
+
+		if *resp.IsTruncated == false {
+			break
+		}
+
+		params.Marker = resp.Marker
 	}
 
 	return resources, nil

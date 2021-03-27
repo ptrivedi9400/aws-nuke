@@ -3,25 +3,43 @@ package resources
 import (
 	"fmt"
 
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/sns"
 )
 
-func (n *SNSNuke) ListSubscriptions() ([]Resource, error) {
-	resp, err := n.Service.ListSubscriptions(nil)
-	if err != nil {
-		return nil, err
-	}
+func init() {
+	register("SNSSubscription", ListSNSSubscriptions)
+}
+
+func ListSNSSubscriptions(sess *session.Session) ([]Resource, error) {
+	svc := sns.New(sess)
+
+	params := &sns.ListSubscriptionsInput{}
 	resources := make([]Resource, 0)
-	for _, subscription := range resp.Subscriptions {
-		if *subscription.SubscriptionArn != "PendingConfirmation" {
-			resources = append(resources, &SNSSubscription{
-				svc:  n.Service,
-				id:   subscription.SubscriptionArn,
-				name: subscription.Owner,
-			})
+
+	for {
+		resp, err := svc.ListSubscriptions(params)
+		if err != nil {
+			return nil, err
+		}
+		for _, subscription := range resp.Subscriptions {
+			if *subscription.SubscriptionArn != "PendingConfirmation" {
+				resources = append(resources, &SNSSubscription{
+					svc:  svc,
+					id:   subscription.SubscriptionArn,
+					name: subscription.Owner,
+				})
+			}
+
 		}
 
+		if resp.NextToken == nil {
+			break
+		}
+
+		params.NextToken = resp.NextToken
 	}
+
 	return resources, nil
 }
 

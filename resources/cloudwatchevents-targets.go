@@ -3,17 +3,25 @@ package resources
 import (
 	"fmt"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudwatchevents"
 )
 
-func (n *CloudWatchEventsNuke) ListTargets() ([]Resource, error) {
-	resp, err := n.Service.ListRules(nil)
+func init() {
+	register("CloudWatchEventsTarget", ListCloudWatchEventsTargets)
+}
+
+func ListCloudWatchEventsTargets(sess *session.Session) ([]Resource, error) {
+	svc := cloudwatchevents.New(sess)
+
+	resp, err := svc.ListRules(nil)
 	if err != nil {
 		return nil, err
 	}
 	resources := make([]Resource, 0)
 	for _, rule := range resp.Rules {
-		targetResp, err := n.Service.ListTargetsByRule(&cloudwatchevents.ListTargetsByRuleInput{
+		targetResp, err := svc.ListTargetsByRule(&cloudwatchevents.ListTargetsByRuleInput{
 			Rule: rule.Name,
 		})
 		if err != nil {
@@ -22,7 +30,7 @@ func (n *CloudWatchEventsNuke) ListTargets() ([]Resource, error) {
 
 		for _, target := range targetResp.Targets {
 			resources = append(resources, &CloudWatchEventsTarget{
-				svc:      n.Service,
+				svc:      svc,
 				ruleName: rule.Name,
 				targetId: target.Id,
 			})
@@ -40,8 +48,9 @@ type CloudWatchEventsTarget struct {
 func (target *CloudWatchEventsTarget) Remove() error {
 	ids := []*string{target.targetId}
 	_, err := target.svc.RemoveTargets(&cloudwatchevents.RemoveTargetsInput{
-		Ids:  ids,
-		Rule: target.ruleName,
+		Ids:   ids,
+		Rule:  target.ruleName,
+		Force: aws.Bool(true),
 	})
 	return err
 }

@@ -3,28 +3,34 @@ package resources
 import (
 	"fmt"
 
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/rebuy-de/aws-nuke/pkg/types"
 )
 
 type EC2NATGateway struct {
 	svc   *ec2.EC2
-	id    string
-	state string
+	natgw *ec2.NatGateway
 }
 
-func (n *EC2Nuke) ListNATGateways() ([]Resource, error) {
+func init() {
+	register("EC2NATGateway", ListEC2NATGateways)
+}
+
+func ListEC2NATGateways(sess *session.Session) ([]Resource, error) {
+	svc := ec2.New(sess)
+
 	params := &ec2.DescribeNatGatewaysInput{}
-	resp, err := n.Service.DescribeNatGateways(params)
+	resp, err := svc.DescribeNatGateways(params)
 	if err != nil {
 		return nil, err
 	}
 
 	resources := make([]Resource, 0)
-	for _, out := range resp.NatGateways {
+	for _, natgw := range resp.NatGateways {
 		resources = append(resources, &EC2NATGateway{
-			svc:   n.Service,
-			id:    *out.NatGatewayId,
-			state: *out.State,
+			svc:   svc,
+			natgw: natgw,
 		})
 	}
 
@@ -32,7 +38,7 @@ func (n *EC2Nuke) ListNATGateways() ([]Resource, error) {
 }
 
 func (n *EC2NATGateway) Filter() error {
-	if n.state == "deleted" {
+	if *n.natgw.State == "deleted" {
 		return fmt.Errorf("already deleted")
 	}
 	return nil
@@ -40,7 +46,7 @@ func (n *EC2NATGateway) Filter() error {
 
 func (n *EC2NATGateway) Remove() error {
 	params := &ec2.DeleteNatGatewayInput{
-		NatGatewayId: &n.id,
+		NatGatewayId: n.natgw.NatGatewayId,
 	}
 
 	_, err := n.svc.DeleteNatGateway(params)
@@ -51,6 +57,14 @@ func (n *EC2NATGateway) Remove() error {
 	return nil
 }
 
+func (n *EC2NATGateway) Properties() types.Properties {
+	properties := types.NewProperties()
+	for _, tagValue := range n.natgw.Tags {
+		properties.SetTag(tagValue.Key, tagValue.Value)
+	}
+	return properties
+}
+
 func (n *EC2NATGateway) String() string {
-	return n.id
+	return *n.natgw.NatGatewayId
 }

@@ -3,18 +3,25 @@ package resources
 import (
 	"fmt"
 
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/rebuy-de/aws-nuke/pkg/types"
 )
 
 type EC2VPNConnection struct {
 	svc   *ec2.EC2
-	id    string
-	state string
+	conn  *ec2.VpnConnection
 }
 
-func (n *EC2Nuke) ListVPNConnections() ([]Resource, error) {
+func init() {
+	register("EC2VPNConnection", ListEC2VPNConnections)
+}
+
+func ListEC2VPNConnections(sess *session.Session) ([]Resource, error) {
+	svc := ec2.New(sess)
+
 	params := &ec2.DescribeVpnConnectionsInput{}
-	resp, err := n.Service.DescribeVpnConnections(params)
+	resp, err := svc.DescribeVpnConnections(params)
 	if err != nil {
 		return nil, err
 	}
@@ -22,9 +29,8 @@ func (n *EC2Nuke) ListVPNConnections() ([]Resource, error) {
 	resources := make([]Resource, 0)
 	for _, out := range resp.VpnConnections {
 		resources = append(resources, &EC2VPNConnection{
-			svc:   n.Service,
-			id:    *out.VpnConnectionId,
-			state: *out.State,
+			svc:   svc,
+			conn:  out,
 		})
 	}
 
@@ -32,7 +38,7 @@ func (n *EC2Nuke) ListVPNConnections() ([]Resource, error) {
 }
 
 func (v *EC2VPNConnection) Filter() error {
-	if v.state == "deleted" {
+	if *v.conn.State == "deleted" {
 		return fmt.Errorf("already deleted")
 	}
 	return nil
@@ -40,7 +46,7 @@ func (v *EC2VPNConnection) Filter() error {
 
 func (v *EC2VPNConnection) Remove() error {
 	params := &ec2.DeleteVpnConnectionInput{
-		VpnConnectionId: &v.id,
+		VpnConnectionId: v.conn.VpnConnectionId,
 	}
 
 	_, err := v.svc.DeleteVpnConnection(params)
@@ -51,6 +57,14 @@ func (v *EC2VPNConnection) Remove() error {
 	return nil
 }
 
+func (v *EC2VPNConnection) Properties() types.Properties {
+	properties := types.NewProperties()
+	for _, tagValue := range v.conn.Tags {
+		properties.SetTag(tagValue.Key, tagValue.Value)
+	}
+	return properties
+}
+
 func (v *EC2VPNConnection) String() string {
-	return v.id
+	return *v.conn.VpnConnectionId
 }
